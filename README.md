@@ -1,5 +1,5 @@
 # simplepgmg
-## A simple python tool for applying and rolling back PostgreSQL database migrations.
+## A simple Python tool for applying and rolling back PostgreSQL database migrations.
 ### To install the tool, run the following pip command:
 
     pip install simplepgmg@git+https://github.com/JSheare/simplepgmg
