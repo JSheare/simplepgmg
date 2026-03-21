@@ -65,9 +65,9 @@ def get_migration_blocks(migration_text):
     if len(halves) != 2:
         raise SyntaxError('no down block in file.')
 
-    # Stripping comments and other irrelevant characters out of each block
-    up_block = re.sub('--.*\n', '', halves[0]).replace('\n', ' ').replace('\t', '')
-    down_block = re.sub('--.*\n', '', halves[1]).replace('\n', ' ').replace('\t', '')
+    # Stripping irrelevant characters out of each block
+    up_block = halves[0].replace('\n', ' ').replace('\t', '')
+    down_block = halves[1].replace('\n', ' ').replace('\t', '')
     return up_block, down_block
 
 
