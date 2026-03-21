@@ -67,7 +67,7 @@ optional parameter 'version_target'. It should be of the form 'Va.b.c.d', where 
 version number, 'b' is digits corresponding to minor version number, 'c' is digits corresponding to patch number, and 
 'd' is digits corresponding to change number.
 
-### **Rollback Migrations**
+### **Roll back Migrations**
 You can roll back migrations with a command of the following form:
 
     simplepgmg rollback migration_path database [version_target]
