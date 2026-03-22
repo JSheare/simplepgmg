@@ -91,7 +91,7 @@ username = 'alice'
 password = 'foo'
 database = 'bar'
 
-version, name = simplepgmg.get_last_applied_migration(database, username, password)
+version, name, timestamp = simplepgmg.get_last_applied_migration(database, username, password)
 simplepgmg.apply_migrations(migration_path, database, username, password, version_target='V1.2.3.4')
 simplepgmg.rollback_migrations(migration_path, database, username, password, version_target='V0.0.0.0')
 ```

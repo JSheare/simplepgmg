@@ -1,5 +1,6 @@
 """A module containing the functions that make up simplepgmg, including the main CLI function."""
 import argparse
+import datetime
 import hashlib
 import os
 import psycopg
@@ -45,6 +46,10 @@ def get_migration_file_list(directory):
     return files
 
 
+def get_file_version(migration_file):
+    return migration_file.split('/')[-1].split('__', 1)[0]
+
+
 def get_migration(migration_file):
     intermediate = migration_file.split('/')[-1].split('__', 1)
     with open(migration_file, 'r') as file:
@@ -72,7 +77,7 @@ def get_migration_blocks(migration_text):
 
 
 def get_last_applied_migration(database, username, password):
-    """A function that retrieves the version and name of the migration last applied to the given database.
+    """A function that retrieves info for the migration last applied to the given database.
 
     Parameters
     ----------
@@ -85,8 +90,9 @@ def get_last_applied_migration(database, username, password):
 
     Returns
     -------
-    tuple[str, str]
-        Two strings: the version of the last applied migration and its name.
+    tuple[str, str, datetime.datetime]
+        Two strings and a datetime object. In order: the version of the last applied migration, its name, and when it
+        was applied.
 
     Raises
     ------
@@ -104,7 +110,8 @@ def get_last_applied_migration(database, username, password):
                 cur.execute("""
                 SELECT
                     version,
-                    name
+                    name,
+                    applied_timestamp
                 FROM migrations.migration_history
                 ORDER BY applied_timestamp DESC
                 LIMIT 1
@@ -113,7 +120,7 @@ def get_last_applied_migration(database, username, password):
                 if result is None:
                     raise RuntimeError('no applied migrations were found.')
 
-                return result[0], result[1]
+                return result[0], result[1], result[2]
             except psycopg.ProgrammingError:
                 raise RuntimeError('migration schema and/or table do not exist. Please apply at least one migration.')
 
@@ -164,32 +171,40 @@ def apply_migrations(migration_path, database, username, password, version_targe
     if len(migration_files) == 0:
         raise FileNotFoundError('no migration files found.')
 
+    # Making sure that the version target always maps to an existing migration file
     if version_target is None:
-        # The newest migration version
-        version_target = migration_files[-1].split('/')[-1].split('__', 1)[0]
+        version_target = get_file_version(migration_files[-1])  # The newest migration version
+    else:
+        for i in range(len(migration_files) - 1, -1, -1):
+            version = get_file_version(migration_files[i])
+            if version <= version_target:
+                version_target = version
+                break
+
+            if i == 0:
+                if feedback:
+                    print('No new migration(s) to apply')
+
+                return
 
     with (psycopg.connect(f'dbname={database} user={username} password={password} connect_timeout=5', autocommit=True)
           as conn):
         with conn.cursor() as cur:
-            apply_mode = False
-            last_applied = 'V0.0.0.0'
-            # Attempting to get the last migration applied
+            # Checking to see if the version target and/or above have already been applied
             try:
                 cur.execute("""
                 SELECT
                     version
                 FROM migrations.migration_history
-                ORDER BY applied_timestamp DESC
-                LIMIT 1
-                """)
-                result = cur.fetchone()
-                if result is not None:
-                    last_applied = result[0]
-                else:
-                    # This would happen in the case that the migrations table exists but has no migrations
-                    apply_mode = True
+                WHERE version = %s
+                """, (version_target,))
+                if cur.fetchone() is not None:
+                    if feedback:
+                        print('No new migration(s) to apply')
 
-            # Making the schema and table if they aren't defined
+                    return
+
+            # Making the migrations schema and table if they aren't defined
             except psycopg.errors.UndefinedTable:
                 conn.rollback()
                 with conn.transaction():
@@ -202,82 +217,80 @@ def apply_migrations(migration_path, database, username, password, version_targe
                         checksum TEXT NOT NULL)
                     """)
 
-                apply_mode = True
+            start_index = 0
 
-            # Checking to see if everything up through the version target has already been applied
+            # Checking to make sure that the migration chain is intact (i.e. that all previously applied migration files
+            #   haven't been altered and are still present, and that no new ones have been inserted in between old ones)
             cur.execute("""
             SELECT
-                version
+                version,
+                name,
+                checksum
             FROM migrations.migration_history
-            WHERE version = %s
-            """, (version_target,))
-            if cur.fetchone() is not None:
-                if feedback:
-                    print('No new migration(s) to apply')
+            ORDER BY version
+            """)
+            applied_migrations = cur.fetchall()
+            if applied_migrations is not None:
+                for i in range(len(applied_migrations)):
+                    applied_version, applied_name, applied_checksum = applied_migrations[i]
+                    if i < len(migration_files):
+                        version, name, text = get_migration(migration_files[i])
+                        if applied_version != version:
+                            if applied_version < version:
+                                raise RuntimeError(f'the file for previously applied migration '
+                                                   f'{applied_version}__{applied_name} is missing.')
+                            else:
+                                raise RuntimeError(f'migration {version}__{name} was never applied.')
 
-                return
+                        checksum = get_migration_hash(text)
+                        if applied_checksum != checksum:
+                            raise RuntimeError(f'file for migration {version}__{name} has changed since migration was '
+                                               f'applied.')
+                    else:
+                        raise RuntimeError(f'the file for previously applied migration '
+                                           f'{applied_version}__{applied_name} is missing.')
 
-            # Checking migration files and applying them
-            for file in migration_files:
-                version, name, text = get_migration(file)
+                    start_index += 1
+
+            # Applying new migrations
+            for i in range(start_index, len(migration_files)):
+                version, name, text = get_migration(migration_files[i])
                 if version > version_target:
                     break
 
-                # Applying new migrations
-                if apply_mode:
-                    if feedback:
-                        print(f'Applying migration {version}__{name}.')
+                if feedback:
+                    print(f'Applying migration {version}__{name}.')
 
-                    try:
-                        up_block, down_block = get_migration_blocks(text)
-                    except SyntaxError:
-                        raise SyntaxError(f'no rollback block found in migration {version}__{name}')
+                try:
+                    up_block, down_block = get_migration_blocks(text)
+                except SyntaxError:
+                    raise SyntaxError(f'no rollback block found in migration {version}__{name}')
 
-                    # Checking to make sure that the migration can be successfully applied and rolled back
-                    try:
-                        with conn.transaction():
-                            cur.execute(up_block)
-                            cur.execute(down_block)
+                # Checking to make sure that the migration can be successfully applied and rolled back
+                try:
+                    with conn.transaction():
+                        cur.execute(up_block)
+                        cur.execute(down_block)
 
-                    except psycopg.Error as ex:
-                        raise RuntimeError(f'encountered an exception when verifying migration {version}__{name}: '
-                                           f'{ex}.')
+                except psycopg.Error as ex:
+                    raise RuntimeError(f'encountered an exception when verifying migration {version}__{name}: '
+                                       f'{ex}.')
 
-                    # Applying the migration
-                    try:
-                        with conn.transaction():
-                            cur.execute(up_block)
+                # Applying the migration
+                try:
+                    with conn.transaction():
+                        cur.execute(up_block)
 
-                            # Making a migration record
-                            checksum = get_migration_hash(text)
-                            cur.execute("""
-                            INSERT INTO migrations.migration_history(version, name, applied_timestamp, checksum)
-                            VALUES (%s, %s, NOW(), %s)
-                            """, (version, name, checksum))
+                        # Making a migration record
+                        checksum = get_migration_hash(text)
+                        cur.execute("""
+                        INSERT INTO migrations.migration_history(version, name, applied_timestamp, checksum)
+                        VALUES (%s, %s, NOW(), %s)
+                        """, (version, name, checksum))
 
-                    except psycopg.Error as ex:
-                        raise RuntimeError(f'encountered an exception when applying migration {version}__{name}: '
-                                           f'{ex}.')
-
-                # Checking to see that the chain of previously applied migrations hasn't been altered
-                else:
-                    cur.execute("""
-                    SELECT
-                        checksum
-                    FROM migrations.migration_history
-                    WHERE version = %s
-                    """, (version,))
-                    result = cur.fetchone()
-                    if result is None:
-                        raise RuntimeError(f"migration {version}__{name} was never applied.")
-
-                    checksum = get_migration_hash(text)
-                    if checksum != result[0]:
-                        raise RuntimeError(f'file for migration {version}__{name} has changed since migration was '
-                                           f'applied.')
-
-                    if version == last_applied:
-                        apply_mode = True
+                except psycopg.Error as ex:
+                    raise RuntimeError(f'encountered an exception when applying migration {version}__{name}: '
+                                       f'{ex}.')
 
     if feedback:
         print('Migration(s) applied successfully')
@@ -325,87 +338,91 @@ def rollback_migrations(migration_path, database, username, password, version_ta
     if version_target is not None and not is_valid_version_str(version_target):
         raise ValueError('version target is not in the expected format (Vx.x.x.x).')
 
-    migration_files = get_migration_file_list(migration_path)
+    migration_files = get_migration_file_list(migration_path)[::-1]
     if len(migration_files) == 0:
         raise FileNotFoundError('no migration files found.')
 
     with (psycopg.connect(f'dbname={database} user={username} password={password} connect_timeout=5', autocommit=True)
           as conn):
         with conn.cursor() as cur:
-            # Attempting to get the last migration applied
+            # Attempting to get a list of all applied migrations
             try:
                 cur.execute("""
-                            SELECT
-                                version
-                            FROM migrations.migration_history
-                            ORDER BY applied_timestamp DESC
-                            LIMIT 1
-                            """)
-                result = cur.fetchone()
-                if result is not None:
-                    last_applied = result[0]
-                else:
-                    # This would happen in the case that the migrations table exists but has no migrations
-                    raise RuntimeError('no applied migrations were found.')
+                SELECT
+                    version,
+                    name,
+                    checksum
+                FROM migrations.migration_history
+                ORDER BY version DESC
+                """)
+                applied_migrations = cur.fetchall()
+                if applied_migrations is None:
+                    if feedback:
+                        print('No migration(s) to roll back')
+
+                    return
 
             except psycopg.errors.UndefinedTable:
-                raise RuntimeError('migration schema and/or table do not exist. Please apply at least one migration.')
+                if feedback:
+                    print('No migration(s) to roll back')
 
-            # Checking to see if the version target and below were actually applied
-            if version_target is not None:
+                return
+
+            # Setting the version target if necessary
+            if version_target is None:
+                if len(applied_migrations) > 1:
+                    # Setting the version target to the version right before the last applied one
+                    version_target = applied_migrations[1][0]
+                else:
+                    version_target = 'V0.0.0.0'
+
+            # Checking to see if the passed version target was actually applied
+            else:
                 if version_target != 'V0.0.0.0':
                     cur.execute("""
-                    SELECT 
+                    SELECT
                         version
                     FROM migrations.migration_history
                     WHERE version = %s
-                    """, (version_target,))
-                    if cur.fetchone() is None:
+                    """, (version_target, ))
+                    result = cur.fetchone()
+                    if result is None:
                         raise RuntimeError(f'cannot roll back to migration version {version_target} because it was '
                                            f'never applied.')
 
-            else:
-                cur.execute("""
-                SELECT
-                    version
-                FROM migrations.migration_history
-                ORDER BY applied_timestamp DESC
-                LIMIT 1 OFFSET 1
-                """)
-                result = cur.fetchone()
-                if result is None:
-                    version_target = 'V0.0.0.0'
-                else:
-                    version_target = result[0]
+            # Checking to see if a rollback is necessary
+            if version_target == applied_migrations[0][0]:
+                if feedback:
+                    print('No migration(s) to roll back')
 
-            # Checking to see that the chain of previously applied migrations hasn't been altered
-            rollback_list = []
-            for file in migration_files:
-                version, name, text = get_migration(file)
-                if version > last_applied:
+                return
+
+            # Attempting to do rollbacks
+            i = 0
+            for applied_version, applied_name, applied_checksum in applied_migrations:
+                if applied_version == version_target:
                     break
 
-                if version > version_target:
-                    rollback_list.insert(0, (version, name, text))
+                if feedback:
+                    print(f'Rolling back migration {applied_version}__{applied_name}')
 
-                cur.execute("""
-                SELECT
-                    checksum
-                FROM migrations.migration_history
-                    WHERE version = %s
-                """, (version,))
-                result = cur.fetchone()
-                if result is None:
-                    raise RuntimeError(f'migration {version}__{name} was never applied.')
+                # Looking for the right migration file
+                while i < len(migration_files):
+                    if get_file_version(migration_files[i]) == applied_version:
+                        break
 
+                    i += 1
+
+                if i == len(migration_files):
+                    raise RuntimeError(f'file for migration {applied_version}__{applied_name} is missing.')
+
+                version, name, text = get_migration(migration_files[i])
+                # Making sure that the file hasn't been changed since the migration was applied
                 checksum = get_migration_hash(text)
-                if checksum != result[0]:
-                    raise RuntimeError(f'file for migration {version}__{name} has changed since migration was '
-                                       f'applied.')
+                if checksum != applied_checksum:
+                    raise RuntimeError(f'file for migration {applied_version}__{applied_name} has changed since '
+                                       f'migration was applied.')
 
-            # Applying the rollbacks
-            for version, name, text in rollback_list:
-                print(f'Rolling back migration {version}__{name}')
                 _, down_block = get_migration_blocks(text)
                 try:
                     with conn.transaction():
@@ -456,8 +473,8 @@ def main():
         if args.subcommand == 'version':
             username, password = get_database_creds()
             try:
-                version, name = get_last_applied_migration(args.database, username, password)
-                print(f'Last applied migration: {version}__{name}.')
+                version, name, time = get_last_applied_migration(args.database, username, password)
+                print(f'Last applied migration: {version}__{name} at {time}')
             except RuntimeError:
                 print(f'Error: unable to find migration records. Please apply at least one migration.')
             except psycopg.Error as ex:
