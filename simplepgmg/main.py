@@ -5,19 +5,20 @@ import hashlib
 import os
 import psycopg
 import re
+from typing import List, Tuple
 
 
-def get_database_creds():
+def get_database_creds() -> Tuple[str, str]:
     username = input('Database username: ')
     password = input(f'Password for user {username}: ')
     return username, password
 
 
-def is_valid_version_str(version_str):
-    return re.match(r'^V(\d+\.){3}\d+$', version_str)
+def is_valid_version_str(version_str: str) -> bool:
+    return bool(re.match(r'^V(\d+\.){3}\d+$', version_str))
 
 
-def get_migration_file_list(directory):
+def get_migration_file_list(directory: str) -> List[str]:
     if not os.path.isdir(directory):
         raise OSError(f"directory '{directory}' does not exist.")
 
@@ -46,11 +47,11 @@ def get_migration_file_list(directory):
     return files
 
 
-def get_file_version(migration_file):
+def get_file_version(migration_file: str) -> str:
     return migration_file.split('/')[-1].split('__', 1)[0]
 
 
-def get_migration(migration_file):
+def get_migration(migration_file: str) -> Tuple[str, str, str]:
     intermediate = migration_file.split('/')[-1].split('__', 1)
     with open(migration_file, 'r') as file:
         migration_text = file.read()
@@ -59,11 +60,11 @@ def get_migration(migration_file):
     return intermediate[0], intermediate[1].replace('.sql', ''), migration_text
 
 
-def get_migration_hash(migration_text):
+def get_migration_hash(migration_text: str) -> str:
     return hashlib.sha256(migration_text.encode('utf-8')).hexdigest()
 
 
-def get_migration_blocks(migration_text):
+def get_migration_blocks(migration_text: str) -> Tuple[str, str]:
     # Getting the raw text of each block
     halves = migration_text.split('--down', 1)
     # Raising the error if the down block is missing
@@ -71,12 +72,12 @@ def get_migration_blocks(migration_text):
         raise SyntaxError('no down block in file.')
 
     # Stripping irrelevant characters out of each block
-    up_block = halves[0].replace('\n', ' ').replace('\t', '')
-    down_block = halves[1].replace('\n', ' ').replace('\t', '')
+    up_block = re.sub('--.*\n', '', halves[0]).replace('\n', ' ').replace('\t', '')
+    down_block = re.sub('--.*\n', '', halves[1]).replace('\n', ' ').replace('\t', '')
     return up_block, down_block
 
 
-def get_last_applied_migration(database, username, password):
+def get_last_applied_migration(database: str, username: str, password: str) -> Tuple[str, str, datetime.datetime]:
     """A function that retrieves info for the migration last applied to the given database.
 
     Parameters
@@ -125,7 +126,8 @@ def get_last_applied_migration(database, username, password):
                 raise RuntimeError('migration schema and/or table do not exist. Please apply at least one migration.')
 
 
-def apply_migrations(migration_path, database, username, password, version_target=None, **kwargs):
+def apply_migrations(migration_path: str, database: str, username: str, password: str,
+                     version_target: str | None = None, **kwargs: bool) -> None:
     """A function that applies all new migrations to the given database up to and including the given version target.
 
     Parameters
@@ -138,7 +140,7 @@ def apply_migrations(migration_path, database, username, password, version_targe
         The user to connect to the database as. Ideally the owner of the database.
     password : str
         The password of the database user.
-    version_target : str
+    version_target : str | None
         Optional. A version tag of the form V.x.x.x.x. migrations up to and including this version will be applied.
         If unspecified, all new migrations will be applied.
 
@@ -263,6 +265,8 @@ def apply_migrations(migration_path, database, username, password, version_targe
 
                 try:
                     up_block, down_block = get_migration_blocks(text)
+                    print(up_block)
+                    print(down_block)
                 except SyntaxError:
                     raise SyntaxError(f'no rollback block found in migration {version}__{name}')
 
@@ -296,7 +300,8 @@ def apply_migrations(migration_path, database, username, password, version_targe
         print('Migration(s) applied successfully')
 
 
-def rollback_migrations(migration_path, database, username, password, version_target=None, **kwargs):
+def rollback_migrations(migration_path: str, database: str, username: str, password: str,
+                        version_target: str | None =None, **kwargs: bool) -> None:
     """A function that rolls back migrations later than the specified version target.
 
     Parameters
@@ -309,7 +314,7 @@ def rollback_migrations(migration_path, database, username, password, version_ta
         The user to connect to the database as. Ideally the owner of the database.
     password : str
         The password of the database user.
-    version_target : str
+    version_target : str | None
         Optional. A version tag of the form V.x.x.x.x. migrations later than this version will be rolled back. If
         unspecified, only the most recent migration will be rolled back.
 
@@ -442,7 +447,7 @@ def rollback_migrations(migration_path, database, username, password, version_ta
         print('Migration(s) rolled back successfully')
 
 
-def main():
+def main() -> None:
     try:
         parser = argparse.ArgumentParser(prog='simplepgmg',
                                          description='A simple python tool for applying and rolling back PostgreSQL '
