@@ -122,7 +122,7 @@ def get_last_applied_migration(database: str, username: str, password: str) -> T
                     raise RuntimeError('no applied migrations were found.')
 
                 return result[0], result[1], result[2]
-            except psycopg.ProgrammingError:
+            except psycopg.errors.UndefinedTable:
                 raise RuntimeError('migration schema and/or table do not exist. Please apply at least one migration.')
 
 
