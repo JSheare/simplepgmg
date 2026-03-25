@@ -265,8 +265,6 @@ def apply_migrations(migration_path: str, database: str, username: str, password
 
                 try:
                     up_block, down_block = get_migration_blocks(text)
-                    print(up_block)
-                    print(down_block)
                 except SyntaxError:
                     raise SyntaxError(f'no rollback block found in migration {version}__{name}')
 
