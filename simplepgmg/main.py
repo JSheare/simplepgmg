@@ -18,6 +18,16 @@ def is_valid_version_str(version_str: str) -> bool:
     return bool(re.match(r'^V(\d+\.){3}\d+$', version_str))
 
 
+def is_greater_version(version1: str, version2: str) -> bool:
+    numbers1 = tuple(map(int, version1.replace('V', '').split('.')))
+    numbers2 = tuple(map(int, version2.replace('V', '').split('.')))
+    for i in range(len(numbers1)):
+        if numbers1[i] > numbers2[i]:
+            return True
+
+    return False
+
+
 def get_migration_file_list(directory: str) -> List[str]:
     if not os.path.isdir(directory):
         raise OSError(f"directory '{directory}' does not exist.")
@@ -29,7 +39,7 @@ def get_migration_file_list(directory: str) -> List[str]:
             files.append(file)
 
     # Sorting files in ascending order by their version tags
-    files = sorted(files, key=lambda x: x.split('__', 1)[0].replace('V', ''))
+    files = sorted(files, key=lambda x: tuple(map(int, x.split('__', 1)[0].replace('V', '').split('.'))))
 
     # Adding the directory path to each file name and looking for files with the same version tag
     if len(directory) >= 1 and (directory[-1] == '/' or directory[-1] == '\\'):
@@ -229,7 +239,7 @@ def apply_migrations(migration_path: str, database: str, username: str, password
                 name,
                 checksum
             FROM migrations.migration_history
-            ORDER BY version
+            ORDER BY applied_timestamp
             """)
             applied_migrations = cur.fetchall()
             if applied_migrations is not None:
@@ -257,11 +267,11 @@ def apply_migrations(migration_path: str, database: str, username: str, password
             # Applying new migrations
             for i in range(start_index, len(migration_files)):
                 version, name, text = get_migration(migration_files[i])
-                if version > version_target:
+                if is_greater_version(version, version_target):
                     break
 
                 if feedback:
-                    print(f'Applying migration {version}__{name}.')
+                    print(f'Applying migration {version}__{name}')
 
                 try:
                     up_block, down_block = get_migration_blocks(text)
@@ -356,7 +366,7 @@ def rollback_migrations(migration_path: str, database: str, username: str, passw
                     name,
                     checksum
                 FROM migrations.migration_history
-                ORDER BY version DESC
+                ORDER BY applied_timestamp DESC
                 """)
                 applied_migrations = cur.fetchall()
                 if applied_migrations is None:
