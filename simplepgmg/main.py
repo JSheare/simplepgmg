@@ -218,7 +218,6 @@ def apply_migrations(migration_path: str, database: str, username: str, password
 
             # Making the migrations schema and table if they aren't defined
             except psycopg.errors.UndefinedTable:
-                conn.rollback()
                 with conn.transaction():
                     cur.execute("""
                     CREATE SCHEMA IF NOT EXISTS migrations;
