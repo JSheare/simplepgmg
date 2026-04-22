@@ -3,6 +3,7 @@ import argparse
 import datetime
 import hashlib
 import os
+import pathlib
 import psycopg
 import re
 from typing import List, Tuple
@@ -179,6 +180,7 @@ def apply_migrations(migration_path: str, database: str, username: str, password
     if version_target is not None and not is_valid_version_str(version_target):
         raise ValueError('version target is not in the expected format (Vx.x.x.x).')
 
+    migration_path = str(pathlib.Path(migration_path).expanduser())
     migration_files = get_migration_file_list(migration_path)
     if len(migration_files) == 0:
         raise FileNotFoundError('no migration files found.')
@@ -350,6 +352,7 @@ def rollback_migrations(migration_path: str, database: str, username: str, passw
     if version_target is not None and not is_valid_version_str(version_target):
         raise ValueError('version target is not in the expected format (Vx.x.x.x).')
 
+    migration_path = str(pathlib.Path(migration_path).expanduser())
     migration_files = get_migration_file_list(migration_path)[::-1]
     if len(migration_files) == 0:
         raise FileNotFoundError('no migration files found.')
