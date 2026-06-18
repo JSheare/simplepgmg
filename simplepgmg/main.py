@@ -25,6 +25,8 @@ def is_greater_version(version1: str, version2: str) -> bool:
     for i in range(len(numbers1)):
         if numbers1[i] > numbers2[i]:
             return True
+        elif numbers1[i] < numbers2[i]:
+            return False
 
     return False
 
